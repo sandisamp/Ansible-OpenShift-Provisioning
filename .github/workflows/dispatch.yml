@@ -1,0 +1,120 @@
+name: 'Dispatch'
+
+on:
+  issue_comment:
+    types:
+      - 'created'
+
+defaults:
+  run:
+    shell: 'bash'
+
+jobs:
+  dispatch:
+    if: |-
+      (
+        github.event.sender.type == 'User' &&
+        startsWith(github.event.comment.body, '@bobshell') &&
+        contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
+      )
+    runs-on: 'self-hosted'
+    permissions:
+      contents: 'read'
+      issues: 'write'
+      pull-requests: 'write'
+    outputs:
+      command: '${{ steps.extract_command.outputs.command }}'
+      request: '${{ steps.extract_command.outputs.request }}'
+      additional_context: '${{ steps.extract_command.outputs.additional_context }}'
+      issue_number: '${{ github.event.issue.number }}'
+    steps:
+      - name: 'Extract command'
+        id: 'extract_command'
+        uses: 'actions/github-script@v7'
+        env:
+          EVENT_TYPE: '${{ github.event_name }}.${{ github.event.action }}'
+          REQUEST: '${{ github.event.comment.body }}'
+        with:
+          script: |
+            const request = process.env.REQUEST;
+            const eventType = process.env.EVENT_TYPE
+            core.setOutput('request', request);
+
+            if (request.startsWith("@bobshell /review")) {
+              core.setOutput('command', 'review');
+              const additionalContext = request.replace(/^@bobshell \/review/, '').trim();
+              core.setOutput('additional_context', additionalContext);
+            } else if (request.startsWith("@bobshell /summary")) {
+              core.setOutput('command', 'summary');
+              const additionalContext = request.replace(/^@bobshell \/summary/, '').trim();
+              core.setOutput('additional_context', additionalContext);
+            } else {
+              core.setOutput('command', 'fallthrough');
+            }
+
+      - name: 'Acknowledge request'
+        env:
+          GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN || github.token }}'
+          ISSUE_NUMBER: '${{ github.event.issue.number }}'
+          MESSAGE: |-
+            🤖 Hi @${{ github.actor }}, I've received your request, and I'm working on it now! You can track my progress [in the logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for more details.
+          REPOSITORY: '${{ github.repository }}'
+        run: |-
+          curl -L \
+             -X POST \
+             -H "Accept: application/vnd.github+json" \
+             -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+             -H "X-GitHub-Api-Version: 2022-11-28" \
+             https://api.github.com/repos/${REPOSITORY}/issues/${ISSUE_NUMBER}/comments \
+             -d "{\"body\":\"${MESSAGE}\"}"
+
+  review:
+    needs: 'dispatch'
+    if: |-
+      ${{ needs.dispatch.outputs.command == 'review' }}
+    uses: './.github/workflows/review.yml'
+    permissions:
+      contents: 'read'
+      issues: 'write'
+      pull-requests: 'write'
+    secrets: 'inherit'
+
+  summary:
+    needs: 'dispatch'
+    if: |-
+      ${{ needs.dispatch.outputs.command == 'summary' }}
+    uses: './.github/workflows/summary.yml'
+    permissions:
+      contents: 'read'
+      issues: 'write'
+      pull-requests: 'write'
+    secrets: 'inherit'
+
+  fallthrough:
+    needs:
+      - 'dispatch'
+      - 'review'
+      - 'summary'
+    if: |-
+      ${{ always() && !cancelled() && (failure() || needs.dispatch.outputs.command == 'fallthrough') }}
+    runs-on: 'self-hosted'
+    permissions:
+      contents: 'read'
+      issues: 'write'
+      pull-requests: 'write'
+    steps:
+      - name: 'Send failure comment'
+        env:
+          GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN || github.token }}'
+          ISSUE_NUMBER: '${{ github.event.issue.number }}'
+          MESSAGE: |-
+            🤖 I'm sorry @${{ github.actor }}, but I was unable to process your request. Please [see the logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for more details.
+          REPOSITORY: '${{ github.repository }}'
+        run: |-
+          curl -L \
+             -X POST \
+             -H "Accept: application/vnd.github+json" \
+             -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+             -H "X-GitHub-Api-Version: 2022-11-28" \
+             https://api.github.com/repos/${REPOSITORY}/issues/${ISSUE_NUMBER}/comments \
+             -d "{\"body\":\"${MESSAGE}\"}"

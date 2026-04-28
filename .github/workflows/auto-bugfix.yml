@@ -1,0 +1,520 @@
+name: 'Auto Bug Fix'
+
+'on':
+  issues:
+    types:
+      - labeled
+
+concurrency:
+  group: '${{ github.workflow }}-bugfix-${{ github.event.issue.number }}'
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: 'bash'
+
+jobs:
+  check-label:
+    if: github.event.label.name == 'IBM-Bob'
+    runs-on: 'self-hosted'
+    timeout-minutes: 2
+    permissions:
+      contents: 'read'
+      issues: 'write'
+    outputs:
+      should_proceed: 'true'
+    steps:
+      - name: 'Acknowledge bug fix request'
+        env:
+          GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN || github.token }}'
+          ISSUE_NUMBER: '${{ github.event.issue.number }}'
+          REPOSITORY: '${{ github.repository }}'
+          SENDER: '${{ github.event.sender.login }}'
+          RUN_URL: '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'
+        run: |-
+          # Create the comment body with proper JSON escaping
+          cat > /tmp/comment.json <<'EOF'
+          {
+            "body": "## 🤖 Hi @${{ github.event.sender.login }}!\n\nI've detected the **IBM-Bob** label on this issue and I'm ready to help!\n\n### 🚀 What I'll do automatically:\n\n1. 📖 Read and understand the bug description\n2. 🔍 Analyze the codebase to locate the issue\n3. 🛠️ Write complete code to fix the bug\n4. ✅ Create tests to verify the fix\n5. 🔀 Create a pull request with the solution\n6. 📊 Post a detailed summary with test coverage\n\n### 📍 Track My Progress\n\nYou can follow along [in the workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).\n\n⏱️ This may take a few minutes depending on the complexity of the issue.\n\n---\n*Powered by IBM Bob - Your AI Coding Assistant*"
+          }
+          EOF
+
+          # Post the comment
+          curl -L \
+             -X POST \
+             -H "Accept: application/vnd.github+json" \
+             -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+             -H "X-GitHub-Api-Version: 2022-11-28" \
+             https://api.github.com/repos/${REPOSITORY}/issues/${ISSUE_NUMBER}/comments \
+             -d @/tmp/comment.json
+
+          # Clean up
+          rm -f /tmp/comment.json
+
+  auto-bugfix:
+    needs: 'check-label'
+    runs-on: 'self-hosted'
+    timeout-minutes: 30
+    permissions:
+      contents: 'write'
+      issues: 'write'
+      pull-requests: 'write'
+    steps:
+      - name: 'Checkout repository'
+        uses: 'actions/checkout@v4'
+        with:
+          fetch-depth: 0
+
+      - name: 'Download bob-action from default branch'
+        run: |
+          mkdir -p .github/actions/bob-action
+          curl \
+            --retry 3 \
+            --retry-max-time 60 \
+            -L -s \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github.raw" \
+            -o .github/actions/bob-action/action.yml \
+            "${API_URL}/repos/${REPOSITORY}/contents/.github/actions/bob-action/action.yml"
+        env:
+          GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN || github.token }}'
+          API_URL: '${{ github.api_url }}'
+          REPOSITORY: '${{ github.repository }}'
+
+      - name: 'Download and install GitHub MCP server'
+        run: |
+          curl \
+            --retry 3 \
+            --retry-max-time 60 \
+            -L -s --fail \
+            -o github-mcp-server.tar.gz https://github.com/github/github-mcp-server/releases/download/v0.20.1/github-mcp-server_Linux_x86_64.tar.gz
+          tar -xzf github-mcp-server.tar.gz
+          chmod +x ./github-mcp-server
+          rm github-mcp-server.tar.gz
+
+      - name: 'Configure Git'
+        run: |
+          git config --global user.name "Basavaraju-G"
+          git config --global user.email "basavaraju013@gmail.com"
+
+      - name: 'Run automated bug fix'
+        uses: './.github/actions/bob-action'
+        id: 'bobshell_bugfix'
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN || github.token }}'
+          ISSUE_NUMBER: '${{ github.event.issue.number }}'
+          ISSUE_TITLE: '${{ github.event.issue.title }}'
+          ISSUE_BODY: '${{ github.event.issue.body }}'
+          ISSUE_URL: '${{ github.event.issue.html_url }}'
+          REPOSITORY: '${{ github.repository }}'
+          WORKSPACE_PATH: '${{ github.workspace }}'
+          DEFAULT_BRANCH: '${{ github.event.repository.default_branch }}'
+        with:
+          max_coins: 20
+          bobshell_api_key: '${{ secrets.BOBSHELL_API_KEY }}'
+          bobshell_version: '0.0.28'
+          bobshell_debug: '${{ fromJSON(vars.DEBUG || vars.ACTIONS_STEP_DEBUG || false) }}'
+          chat_mode: 'advanced'
+          settings: |-
+            {
+              "coreTools": [
+                "read_file",
+                "write_to_file",
+                "apply_diff",
+                "insert_content",
+                "list_files",
+                "list_code_definition_names",
+                "search_files",
+                "execute_command",
+                "attempt_completion"
+              ]
+            }
+          mcp: |-
+            {
+              "mcpServers": {
+                "github": {
+                  "command": "./github-mcp-server",
+                  "args": ["stdio"],
+                  "includeTools": [
+                    "issue_read",
+                    "add_issue_comment",
+                    "search_code",
+                    "search_issues",
+                    "get_file_contents",
+                    "create_pull_request"
+                  ],
+                  "env": {
+                    "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}",
+                    "GITHUB_HOST": "https://github.com"
+                  }
+                }
+              }
+            }
+          prompt: |-
+            ## Role
+
+            You are an elite autonomous bug-fixing agent with deep expertise in software engineering, debugging, and code analysis. You operate in advanced mode with full access to the codebase and development tools. Your mission is to completely resolve the reported bug by writing production-ready code.
+
+            ## Primary Directive
+
+            Your sole purpose is to:
+            1. Thoroughly understand the bug from the GitHub issue
+            2. Analyze the codebase to locate the root cause
+            3. Implement a complete, tested solution
+            4. Create a pull request with your fix
+            5. Post a comprehensive summary to the issue with PR details and test coverage
+
+            This is an **autopilot mode** - you must work autonomously without human intervention until the bug is fixed and documented.
+
+            ## Critical Operational Constraints
+
+            1. **Autonomy**: You MUST work independently. Do not ask questions or request clarification. Make informed decisions based on available context.
+
+            2. **Completeness**: Your solution MUST be production-ready, including:
+               - Complete bug fix implementation
+               - Proper error handling
+               - Unit tests (if applicable)
+               - Updated documentation (if needed)
+
+            3. **Code Quality**: All code MUST:
+               - Follow the project's existing style and conventions
+               - Be well-commented and self-documenting
+               - Handle edge cases appropriately
+               - Not introduce new bugs or regressions
+
+            4. **Git Workflow**: You MUST:
+               - Create a new branch named `bugfix/issue-${ISSUE_NUMBER}`
+               - Make atomic, well-described commits
+               - Create a pull request that references the issue
+
+            5. **Tool Usage**: Use all available tools strategically:
+               - `read_file` - Read source files
+               - `search_files` - Find relevant code patterns
+               - `list_code_definition_names` - Understand code structure
+               - `apply_diff` - Make surgical code changes
+               - `write_to_file` - Create new files
+               - `execute_command` - Run tests, build, git commands
+               - `mcp__github__*` - Interact with GitHub
+
+            ## Input Data
+
+            - **GitHub Repository**: ${{ env.REPOSITORY }}
+            - **Issue Number**: ${{ env.ISSUE_NUMBER }}
+            - **Issue Title**: ${{ env.ISSUE_TITLE }}
+            - **Issue URL**: ${{ env.ISSUE_URL }}
+            - **Issue Body**:
+            ```
+            ${{ env.ISSUE_BODY }}
+            ```
+            - **Workspace Path**: ${{ env.WORKSPACE_PATH }}
+            - **Default Branch**: ${{ env.DEFAULT_BRANCH }}
+
+            Use `mcp__github__issue_read.get` to get complete issue details including comments and labels.
+
+            -----
+
+            ## Execution Workflow
+
+            Follow this systematic approach:
+
+            ### Phase 1: Issue Analysis (5-10 minutes)
+
+            1. **Read the Issue Thoroughly**
+               - Use `mcp__github__issue_read.get` to get full issue context
+               - Identify the bug symptoms, expected behavior, and actual behavior
+               - Note any error messages, stack traces, or reproduction steps
+               - Check for related issues or PRs
+
+            2. **Understand the Context**
+               - Determine which components/modules are affected
+               - Identify the programming language and frameworks involved
+               - Review any provided code snippets or logs
+
+            3. **Formulate Hypothesis**
+               - Based on the issue description, hypothesize the root cause
+               - Identify files and functions that likely contain the bug
+
+            ### Phase 2: Code Investigation (10-15 minutes)
+
+            1. **Locate Relevant Code**
+               - Use `list_files` to understand project structure
+               - Use `search_files` with regex to find relevant code patterns
+               - Use `list_code_definition_names` to understand module organization
+               - Use `mcp__github__search_code` for cross-repository searches if needed
+
+            2. **Analyze the Bug**
+               - Read the identified files using `read_file`
+               - Trace the execution flow to understand how the bug occurs
+               - Identify the exact lines causing the issue
+               - Understand dependencies and side effects
+
+            3. **Verify Root Cause**
+               - Confirm your hypothesis matches the code behavior
+               - Check for similar patterns elsewhere in the codebase
+               - Consider edge cases and boundary conditions
+
+            ### Phase 3: Solution Implementation (15-20 minutes)
+
+            1. **Create Feature Branch**
+               ```bash
+               git checkout -b bugfix/issue-${{ env.ISSUE_NUMBER }}
+               ```
+
+            2. **Implement the Fix**
+               - Use `apply_diff` for targeted changes to existing files
+               - Use `write_to_file` for new files or complete rewrites
+               - Use `insert_content` for adding new code sections
+               - Ensure changes are minimal and focused on the bug
+               - Add appropriate comments explaining the fix
+
+            3. **Add/Update Tests**
+               - Create or update unit tests to cover the bug scenario
+               - Ensure tests fail before the fix and pass after
+               - Add regression tests to prevent future occurrences
+               - Run tests using `execute_command`
+
+            4. **Update Documentation**
+               - Update relevant documentation if behavior changed
+               - Add inline comments for complex logic
+               - Update CHANGELOG if the project maintains one
+
+            5. **Verify the Fix**
+               - Run the test suite: `execute_command` with test commands
+               - Build the project if applicable
+               - Verify no new errors or warnings introduced
+
+            ### Phase 4: Pull Request Creation (5 minutes)
+
+            1. **Clean Up Workflow Artifacts**
+               Before committing, remove workflow-specific files that should not be in the PR:
+               ```bash
+               # Remove Bob configuration files
+               rm -rf .bob/
+
+               # Remove downloaded GitHub MCP server binary
+               rm -f github-mcp-server
+
+               # Remove any other workflow artifacts
+               rm -f session-summary.json
+
+               # Verify cleanup
+               git status
+               ```
+
+            2. **Commit Changes**
+               ```bash
+               git add .
+               git commit -m "Fix: [Brief description of the bug fix]
+
+               Resolves #${{ env.ISSUE_NUMBER }}
+
+               - [Detailed explanation of what was changed]
+               - [Why this approach was chosen]
+               - [Any trade-offs or considerations]"
+               ```
+
+            3. **Push Branch**
+               ```bash
+               git push origin bugfix/issue-${{ env.ISSUE_NUMBER }}
+               ```
+
+            4. **Create Pull Request**
+               
+               **IMPORTANT**: You MUST create the pull request using the built-in `create_pull_request` tool (NOT the MCP tool).
+               
+               Use the `create_pull_request` tool with these parameters:
+               - **head**: `bugfix/issue-${{ env.ISSUE_NUMBER }}`
+               - **base**: `${{ env.DEFAULT_BRANCH }}`
+               - **title**: `Fix: [Clear, concise description] (Fixes #${{ env.ISSUE_NUMBER }})`
+               - **remote**: `origin`
+               - **body**: Use this template:
+               ```markdown
+               ## 🐛 Bug Fix
+
+               Fixes #${{ env.ISSUE_NUMBER }}
+
+               ## 📋 Description
+
+               [2-3 sentences explaining what the bug was and how you fixed it]
+
+               ## 🔍 Root Cause
+
+               [Explain what was causing the bug]
+
+               ## ✅ Solution
+
+               [Describe your fix and why this approach was chosen]
+
+               ## 🧪 Testing
+
+               - [ ] Unit tests added/updated
+               - [ ] All tests passing
+               - [ ] Manual testing performed (if applicable)
+
+               ## 📁 Files Changed
+
+               - **`path/to/file1.ext`** - [Brief description of changes]
+               - **`path/to/file2.ext`** - [Brief description of changes]
+
+               ## 🤖 Automated Fix
+
+               This pull request was automatically generated by IBM Bob in response to issue #${{ env.ISSUE_NUMBER }}.
+
+               ---
+
+               Made by Bob 🤖
+               ```
+
+            ### Phase 5: Post Summary to Issue
+
+            **CRITICAL**: After creating the PR, you MUST post a comprehensive summary comment to the original issue using the `add_issue_comment` MCP tool.
+
+            Use this exact format:
+
+            ```markdown
+            ## ✅ Automated Fix Complete
+
+            I've successfully analyzed and fixed this issue! Here's what I did:
+
+            ### 🔗 Pull Request
+            **PR #[NUMBER]**: [PR Title]
+            **Link**: [Full PR URL]
+
+            ### 📋 Quick Summary
+            [2-3 sentences explaining what the bug was and how it was fixed]
+
+            ### 🔍 Root Cause
+            [Brief explanation of what was causing the bug]
+
+            ### 🛠️ Changes Made
+            - **File 1**: [Brief description]
+            - **File 2**: [Brief description]
+            - [Additional files as needed]
+
+            ### 🧪 Test Coverage
+            - **Tests Added**: [Number] new test(s)
+            - **Tests Updated**: [Number] existing test(s) modified
+            - **Test Results**: ✅ All tests passing / ⚠️ [X] tests need review
+            - **Coverage**: [If available, mention coverage percentage or areas covered]
+
+            ### 📊 Code Quality
+            - **Lines Changed**: +[additions] / -[deletions]
+            - **Files Modified**: [number] file(s)
+            - **Build Status**: ✅ Passing / ⚠️ Needs attention
+
+            ### 🎯 Next Steps
+            1. Review the pull request
+            2. Run additional manual tests if needed
+            3. Merge when ready
+
+            ---
+            🤖 This fix was automatically generated by **IBM Bob**
+            ```
+
+            **IMPORTANT**: You MUST use the `add_issue_comment` tool to post this summary. Do NOT skip this step. The summary should be posted BEFORE you call `attempt_completion`.
+
+            ### Phase 6: Completion
+
+            Use `attempt_completion` to report:
+            - Summary of the bug and fix
+            - Pull request URL and number
+            - Test results and coverage
+            - Files changed count
+            - Any important notes or considerations
+
+            -----
+
+            ## Best Practices
+
+            1. **Be Thorough**: Don't rush. Understand the problem completely before coding.
+
+            2. **Be Conservative**: Make minimal changes. Don't refactor unrelated code.
+
+            3. **Be Defensive**: Add error handling and validation where appropriate.
+
+            4. **Be Clear**: Write clear commit messages and PR descriptions.
+
+            5. **Be Responsible**: If you cannot fix the bug confidently, explain why in the issue comments.
+
+            ## Error Handling
+
+            If you encounter issues:
+
+            1. **Cannot Locate Bug**: Comment on the issue explaining what you searched and why you couldn't find it. Request more information.
+
+            2. **Complex Fix Required**: If the fix requires architectural changes, create a detailed analysis comment and suggest the approach.
+
+            3. **Tests Failing**: Debug the test failures. Don't create a PR with failing tests.
+
+            4. **Ambiguous Requirements**: Make reasonable assumptions based on common practices and document them in the PR.
+
+            -----
+
+            ## Final Instructions
+
+            Remember: You are in **autopilot mode**. Work autonomously, make informed decisions, and deliver a complete, tested solution. The goal is a merged PR that resolves the issue, not a partial fix or analysis.
+
+            Start by reading the issue details and begin your investigation. Good luck! 🚀
+
+      - name: 'Handle bugfix errors'
+        if: failure() && steps.bobshell_bugfix.outcome == 'failure'
+        run: |
+          error_message="⚠️ **Automated Bug Fix Failed**
+
+          I encountered an error while attempting to fix this issue automatically. This could be due to:
+          - Issue complexity requiring human judgment
+          - Insufficient information in the issue description
+          - Technical limitations or API issues
+          - Code conflicts or test failures
+
+          **What to do next:**
+          1. Review the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details
+          2. Consider providing more context in the issue description
+          3. A human developer may need to investigate this issue manually
+
+          **Troubleshooting:**
+          - Ensure the issue description includes:
+            - Clear reproduction steps
+            - Expected vs actual behavior
+            - Error messages or stack traces
+            - Relevant code snippets or file paths
+
+          I'll keep the **bob** label on this issue so you can retry if needed."
+
+          curl \
+            --retry 3 \
+            --retry-max-time 60 \
+            -L -s --fail \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${REPOSITORY}/issues/${ISSUE_NUMBER}/comments" \
+            -d "{\"body\":\"${error_message}\"}" || true
+        env:
+          REPOSITORY: '${{ github.repository }}'
+          ISSUE_NUMBER: '${{ github.event.issue.number }}'
+          GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN || github.token }}'
+
+      - name: 'Post bugfix cost'
+        if: always()
+        run: |
+          if [ -f session-summary.json ]; then
+            cost=$(jq -r '.sessionMetrics.sessionCost' session-summary.json)
+
+            curl \
+            --retry 3 \
+            --retry-max-time 60 \
+            -L -s --fail \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${REPOSITORY}/issues/${ISSUE_NUMBER}/comments" \
+            -d "{\"body\":\"🤖 The cost of this automated bug fix attempt was **${cost}** Bob coins.\"}"
+          fi
+        env:
+          REPOSITORY: '${{ github.repository }}'
+          ISSUE_NUMBER: '${{ github.event.issue.number }}'
+          GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN || github.token }}'
