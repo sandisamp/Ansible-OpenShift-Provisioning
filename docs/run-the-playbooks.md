@@ -76,6 +76,7 @@ Configures the RHEL server(s) installed natively on the LPAR(s) to act as virtua
 * RHEL subscription is auto-attached to all KVM hosts.
 * Software packages specified in group_vars/all.yaml have been installed.
 * Cockpit console enabled for Graphical User Interface via web browser. Go to http://kvm-ip-here:9090 to view it.
+* TigerVNC server is configured and enabled for remote desktop administration. Connect with a VNC client at kvm-ip-here:5901 (display :1).
 * Libvirt is started and enabled.
 * Logical volume group that was created during kickstart is extended to fill all available space.
 * A macvtap bridge has been created on the host's networking interface.
@@ -141,6 +142,39 @@ Final steps of waiting for and verifying the OpenShift cluster to complete its i
 * To install a new cluster, copy your inventory directory, change the default in the ansible.cfg, change the variables, and start again. With all the customizations to the playbooks you made along the way still intact.
 
 # Additional Playbooks
+
+## Delete Cluster Nodes Playbook (delete_cluster_nodes.yaml)
+### Overview
+* Use this playbook to delete all cluster nodes (bootstrap, control, compute, and infra nodes) from the configured KVM hosts based on your `inventories/default/group_vars/all.yaml` configuration.
+* This is useful when you need to tear down the cluster nodes while keeping the bastion and infrastructure intact.
+
+### Usage
+To delete all cluster nodes from all configured KVM hosts:
+```
+ansible-playbook playbooks/delete_cluster_nodes.yaml
+```
+
+To delete nodes from a specific KVM host only, use tags:
+```
+ansible-playbook playbooks/delete_cluster_nodes.yaml --tags kvm_host_1
+ansible-playbook playbooks/delete_cluster_nodes.yaml --tags kvm_host_2
+ansible-playbook playbooks/delete_cluster_nodes.yaml --tags kvm_host_3
+```
+
+### Outcomes
+* All cluster nodes (bootstrap, control, compute, and infra) are destroyed and undefined from the configured KVM hosts.
+* Virtual machine storage is removed.
+* A summary message is displayed upon completion.
+
+### Notes
+* This playbook does **NOT** delete:
+    * The bastion node
+    * Network configurations
+    * Storage pools
+    * DNS or HAProxy configurations
+* To verify deletion, run `virsh list --all` on each KVM host.
+* The playbook uses the existing `delete_nodes` role which safely handles non-existent VMs.
+* If you need to reinstall the cluster after deletion, use the `reinstall_cluster.yaml` playbook or run playbooks 6 and 7.
 
 ## Create additional compute nodes (create_compute_node.yaml) and delete compute nodes (delete_compute_node.yaml)
 ### Overview

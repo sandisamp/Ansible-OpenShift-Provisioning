@@ -15,10 +15,10 @@ on:
 
 jobs:
   lint:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - name: checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           path: "${{ github.repository }}"
       - name: molecule
@@ -28,7 +28,7 @@ jobs:
   test:
     needs:
       - lint
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
       matrix:
@@ -41,7 +41,7 @@ jobs:
             tag: "latest"
     steps:
       - name: checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           path: "${{ github.repository }}"
       - name: disable apparmor for mysql
